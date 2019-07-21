@@ -1,0 +1,29 @@
+version: "3"
+services:
+  lower:
+    image: postgres:10
+    volumes:
+      - ./lower/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+
+  upper:
+    links:
+      - lower
+    image: postgres:10
+
+  postgres-overlay:
+    build:
+      context: ../../
+      dockerfile: test/e2e/Dockerfile
+    links:
+      - lower
+      - upper
+    environment:
+      LOWER_HOST: lower
+      LOWER_DATABASE: postgres
+      LOWER_USER: postgres
+      LOWER_PASSWORD: postgres
+
+      UPPER_HOST: upper
+      UPPER_DATABASE: postgres
+      UPPER_USER: postgres
+      UPPER_PASSWORD: postgres
