@@ -73,8 +73,8 @@ const TABLES_QUERY = `SELECT schemaname, tablename
 FROM pg_catalog.pg_tables
 WHERE tableowner = current_user AND NOT (schemaname = ANY($1::text[]));`;
 
-const COLUMNS_QUERY = `SELECT column_name, data_type, is_nullable = 'YES' as is_nullable, column_default
-FROM information_schema.columns 
+const COLUMNS_QUERY = `SELECT column_name, udt_name::regtype as data_type, is_nullable = 'YES' as is_nullable, column_default
+FROM information_schema.columns
 WHERE table_schema = $1 AND table_name = $2;`;
 
 const PRIMARY_KEYS_QUERY = `SELECT a.attname as column_name, format_type(a.atttypid, a.atttypmod) AS data_type

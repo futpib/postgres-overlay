@@ -3,6 +3,7 @@ CREATE TABLE various_types
   ( id SERIAL PRIMARY KEY
   , text text NOT NULL
   , timestamp timestamp
+  , array_array_integer integer[][]
   );
 
 INSERT INTO various_types
