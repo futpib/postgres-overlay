@@ -3302,6 +3302,11 @@ make-dir@^3.0.0:
   dependencies:
     semver "^6.0.0"
 
+make-promises-safe@^5.0.0:
+  version "5.0.0"
+  resolved "https://registry.yarnpkg.com/make-promises-safe/-/make-promises-safe-5.0.0.tgz#a42b6d9cebfa1642fc3a5bdb4e583dce35f2689d"
+  integrity sha512-QfwbMG10X/sZ5H0fkxziUSl/UhORD4QBMhK5kTMDUyqPRJblVJSG6UMdKwl0ymshK7jpdclaXhC56uUC0exvDw==
+
 map-age-cleaner@^0.1.1:
   version "0.1.3"
   resolved "https://registry.yarnpkg.com/map-age-cleaner/-/map-age-cleaner-0.1.3.tgz#7d583a7306434c055fe474b0f45078e6e1b4b92a"
