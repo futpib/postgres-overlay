@@ -9,6 +9,7 @@ const {
 	maybeToNullable,
 	prop,
 	chain,
+	concat,
 	I,
 
 	Pair,
@@ -57,13 +58,16 @@ const withPool = async (options, f) => {
 
 const unique = xs => [ ...new Set(xs) ];
 
-const lowerSchemaNameToUpperSchemaName = schemaname => 'overlay_lower_' + schemaname;
+const lowerSchemaNameToUpperSchemaName = concat('overlay_lower_');
 
-const lowerSchemaNameToUpperDeletedSchemaName = schemaname => 'overlay_upper_deleted_' + schemaname;
-const lowerSchemaNameToUpperInsertedSchemaName = schemaname => 'overlay_upper_inserted_' + schemaname;
+const lowerSchemaNameToUpperDeletedSchemaName = concat('overlay_upper_deleted_');
+const lowerSchemaNameToUpperInsertedSchemaName = concat('overlay_upper_inserted_');
 
-const lowerSchemaNameToUpperDeleteRuleSchemaName = schemaname => 'overlay_upper_delete_rule_' + schemaname;
-const lowerSchemaNameToUpperUpdateRuleSchemaName = schemaname => 'overlay_upper_update_rule_' + schemaname;
+const lowerSchemaNameToUpperDeleteRuleSchemaName = concat('overlay_upper_delete_rule_');
+const lowerSchemaNameToUpperInsertRuleSchemaName = concat('overlay_upper_insert_rule_');
+const lowerSchemaNameToUpperUpdateRuleSchemaName = concat('overlay_upper_update_rule_');
+
+const lowerSchemaNameToUpperDefaultFunctionSchemaName = concat('overlay_upper_default_function_');
 
 const TABLES_QUERY = `SELECT schemaname, tablename
 FROM pg_catalog.pg_tables
@@ -109,6 +113,21 @@ FROM $3.$4
 		ON $C
 WHERE $8;`;
 
+const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION $1.$2()
+RETURNS $3
+AS $$
+BEGIN
+RETURN 1 + (
+	SELECT MAX($4)
+	FROM $5.$6
+);
+END
+$$ LANGUAGE plpgsql;`;
+
+const ALTER_VIEW_DEFAULT = `ALTER VIEW $1.$2
+ALTER COLUMN $3
+SET DEFAULT $4.$5();`;
+
 const CREATE_DELETE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON DELETE TO $3.$4
 DO INSTEAD
 INSERT INTO $5.$6 VALUES ($7);`;
@@ -117,6 +136,12 @@ const CREATE_UPDATE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON UPDATE TO $3.$4
 DO INSTEAD
 INSERT INTO $5.$6 VALUES ($7)
 ON CONFLICT ($8) DO UPDATE SET $9;`;
+
+const CREATE_INSERT_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON INSERT TO $3.$4
+DO INSTEAD (
+	DELETE FROM $5.$6 WHERE $7;
+	INSERT INTO $8.$9 VALUES ($A);
+);`;
 
 const CREATE_RESET_FUNCTION = `CREATE OR REPLACE FUNCTION overlay_reset()
 RETURNS void
@@ -289,6 +314,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 	}));
 
 	await createAllSchemas(I);
+	await createAllSchemas(lowerSchemaNameToUpperDefaultFunctionSchemaName);
 
 	await Promise.all(lowerTables.map(async table => {
 		const upperSchemaName = lowerSchemaNameToUpperSchemaName(table.schemaname);
@@ -299,6 +325,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 		const upperInsertedSchemaName = lowerSchemaNameToUpperInsertedSchemaName(table.schemaname);
 
 		const upperUpdateRuleSchemaName = lowerSchemaNameToUpperUpdateRuleSchemaName(table.schemaname);
+		const upperInsertRuleSchemaName = lowerSchemaNameToUpperInsertRuleSchemaName(table.schemaname);
 
 		await upperPool.query(
 			CREATE_VIEW
@@ -396,6 +423,33 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				)
 		);
 
+		await Promise.all(
+			table.columns
+				.filter(column => Boolean(column.column_default))
+				.map(async column => {
+					const upperDefaultFunctionSchemaName = lowerSchemaNameToUpperDefaultFunctionSchemaName(table.schemaname);
+
+					await upperPool.query(
+						CREATE_DEFAULT_FUNCTION
+							.replace('$1', pgEscape.string(upperDefaultFunctionSchemaName))
+							.replace('$2', pgEscape.string(table.tablename))
+							.replace('$3', pgEscape.string(column.data_type))
+							.replace('$4', pgEscape.string(column.column_name))
+							.replace('$5', pgEscape.string(table.schemaname))
+							.replace('$6', pgEscape.string(table.tablename))
+					);
+
+					await upperPool.query(
+						ALTER_VIEW_DEFAULT
+							.replace('$1', pgEscape.string(table.schemaname))
+							.replace('$2', pgEscape.string(table.tablename))
+							.replace('$3', pgEscape.string(column.column_name))
+							.replace('$4', pgEscape.string(upperDefaultFunctionSchemaName))
+							.replace('$5', pgEscape.string(table.tablename))
+					);
+				})
+		);
+
 		await upperPool.query(
 			CREATE_DELETE_RULE
 				.replace('$1', pgEscape.string(upperDeleteRuleSchemaName))
@@ -404,6 +458,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				.replace('$4', pgEscape.string(table.tablename))
 				.replace('$5', pgEscape.string(upperDeletedSchemaName))
 				.replace('$6', pgEscape.string(table.tablename))
+
 				.replace(
 					'$7',
 					table.primaryKeys
@@ -420,18 +475,21 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				.replace('$4', pgEscape.string(table.tablename))
 				.replace('$5', pgEscape.string(upperInsertedSchemaName))
 				.replace('$6', pgEscape.string(table.tablename))
+
 				.replace(
 					'$7',
 					table.columns
 						.map(column => 'NEW.' + pgEscape.string(column.column_name))
 						.join(', ')
 				)
+
 				.replace(
 					'$8',
 					table.primaryKeys
 						.map(primaryKey => pgEscape.string(primaryKey.column_name))
 						.join(', '),
 				)
+
 				.replace(
 					'$9',
 					table.columns
@@ -442,6 +500,43 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 								'EXCLUDED.' + pgEscape.string(column.column_name),
 							].join(' ')
 						))
+						.join(', '),
+				)
+		);
+
+		await upperPool.query(
+			CREATE_INSERT_RULE
+				.replace('$1', pgEscape.string(upperInsertRuleSchemaName))
+				.replace('$2', pgEscape.string(table.tablename))
+				.replace('$3', pgEscape.string(table.schemaname))
+				.replace('$4', pgEscape.string(table.tablename))
+				.replace('$5', pgEscape.string(upperDeletedSchemaName))
+				.replace('$6', pgEscape.string(table.tablename))
+
+				.replace(
+					'$7',
+					table.primaryKeys
+						.map(primaryKey => (
+							[
+								[
+									pgEscape.string(upperDeletedSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(primaryKey.column_name),
+								].join('.'),
+								'=',
+								'NEW.' + pgEscape.string(primaryKey.column_name),
+							].join(' ')
+						))
+						.join(' AND ')
+				)
+
+				.replace('$8', pgEscape.string(upperInsertedSchemaName))
+				.replace('$9', pgEscape.string(table.tablename))
+
+				.replace(
+					'$A',
+					table.columns
+						.map(column => 'NEW.' + pgEscape.string(column.column_name))
 						.join(', '),
 				)
 		);

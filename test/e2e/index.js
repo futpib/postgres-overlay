@@ -1,5 +1,13 @@
 
+import {
+	any,
+	equals,
+	filter,
+} from 'sanctuary';
+
 import test from 'ava';
+
+import pgEscape from 'pg-escape';
 
 import { poolOptionsFromEnv, main } from '../..';
 
@@ -31,22 +39,34 @@ const tables = [
 	{
 		name: 'various_types',
 		integerColumnName: 'id',
+		sampleValues: [
+			'DEFAULT',
+			pgEscape.literal('foo'),
+			'NOW()',
+		],
 	},
 	{
 		name: 'compound_primary_key',
 		integerColumnName: 'foo_id',
+		sampleValues: [
+			4,
+			4,
+			pgEscape.literal('foo'),
+		],
 	},
 ];
 
+const selectMacro = async (t, table) => {
+	const { lowerPool, upperPool } = t.context;
+
+	const { rows: lowerRows } = await lowerPool.query(`SELECT * FROM ${table.name};`);
+	const { rows: upperRows } = await upperPool.query(`SELECT * FROM ${table.name};`);
+
+	t.deepEqual(upperRows, lowerRows);
+};
+
 tables.forEach(table => {
-	test.serial(`${table.name} select`, async t => {
-		const { lowerPool, upperPool } = t.context;
-
-		const { rows: lowerRows } = await lowerPool.query(`SELECT * FROM ${table.name};`);
-		const { rows: upperRows } = await upperPool.query(`SELECT * FROM ${table.name};`);
-
-		t.deepEqual(upperRows, lowerRows);
-	});
+	test.serial(`${table.name} select`, selectMacro, table);
 
 	test.serial(`${table.name} delete`, async t => {
 		const { lowerPool, upperPool } = t.context;
@@ -78,4 +98,29 @@ tables.forEach(table => {
 
 		t.deepEqual(upperRows.length, 1);
 	});
+
+	test.serial(`${table.name} insert`, async t => {
+		const { lowerPool, upperPool } = t.context;
+
+		const values = table.sampleValues.join(', ');
+
+		await upperPool.query(
+			`INSERT INTO ${table.name} VALUES (${values});`
+		);
+
+		const { rows: upperRows } = await upperPool.query(
+			`SELECT * FROM ${table.name};`
+		);
+
+		const { rows: lowerRows } = await lowerPool.query(
+			`SELECT * FROM ${table.name};`
+		);
+
+		const anyEquals = x => any(equals(x));
+		const newUpperValues = filter(x => !anyEquals(x)(lowerRows))(upperRows);
+
+		t.is(newUpperValues.length, 1);
+	});
+
+	test.serial(`${table.name} select again`, selectMacro, table);
 });
