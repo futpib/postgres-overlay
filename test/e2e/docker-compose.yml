@@ -17,6 +17,8 @@ services:
     links:
       - lower
       - upper
+    volumes:
+      - ../../.nyc_output:/usr/src/app/.nyc_output
     environment:
       LOWER_HOST: lower
       LOWER_DATABASE: postgres

@@ -1,5 +1,12 @@
 language: node_js
+
 node_js:
   - 'node'
+
+script:
+  - yarn test
+  - cd test/e2e
+  - docker-compose run postgres-overlay
+
 after_success:
   - './node_modules/.bin/nyc report --reporter=text-lcov | ./node_modules/.bin/coveralls'
