@@ -190,8 +190,6 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 		};
 	}));
 
-	console.log(JSON.stringify({ lowerTables }, null, 2));
-
 	await upperPool.query(CREATE_FDW_EXTENSION_QUERY);
 
 	await upperPool.query(
