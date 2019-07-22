@@ -63,6 +63,7 @@ const lowerSchemaNameToUpperDeletedSchemaName = schemaname => 'overlay_upper_del
 const lowerSchemaNameToUpperInsertedSchemaName = schemaname => 'overlay_upper_inserted_' + schemaname;
 
 const lowerSchemaNameToUpperDeleteRuleSchemaName = schemaname => 'overlay_upper_delete_rule_' + schemaname;
+const lowerSchemaNameToUpperUpdateRuleSchemaName = schemaname => 'overlay_upper_update_rule_' + schemaname;
 
 const TABLES_QUERY = `SELECT schemaname, tablename
 FROM pg_catalog.pg_tables
@@ -100,15 +101,22 @@ FROM SERVER lower INTO $3;`;
 const CREATE_TABLE = 'CREATE TABLE IF NOT EXISTS $1.$2 ($3);';
 
 const CREATE_VIEW = `CREATE OR REPLACE VIEW $1.$2
-AS SELECT $3.$4.*
+AS SELECT $B
 FROM $3.$4
 	LEFT JOIN $5.$6
 		ON $7
+	FULL OUTER JOIN $9.$A
+		ON $C
 WHERE $8;`;
 
 const CREATE_DELETE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON DELETE TO $3.$4
 DO INSTEAD
 INSERT INTO $5.$6 VALUES ($7);`;
+
+const CREATE_UPDATE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON UPDATE TO $3.$4
+DO INSTEAD
+INSERT INTO $5.$6 VALUES ($7)
+ON CONFLICT ($8) DO UPDATE SET $9;`;
 
 const CREATE_RESET_FUNCTION = `CREATE OR REPLACE FUNCTION overlay_reset()
 RETURNS void
@@ -284,8 +292,13 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 
 	await Promise.all(lowerTables.map(async table => {
 		const upperSchemaName = lowerSchemaNameToUpperSchemaName(table.schemaname);
+
 		const upperDeletedSchemaName = lowerSchemaNameToUpperDeletedSchemaName(table.schemaname);
 		const upperDeleteRuleSchemaName = lowerSchemaNameToUpperDeleteRuleSchemaName(table.schemaname);
+
+		const upperInsertedSchemaName = lowerSchemaNameToUpperInsertedSchemaName(table.schemaname);
+
+		const upperUpdateRuleSchemaName = lowerSchemaNameToUpperUpdateRuleSchemaName(table.schemaname);
 
 		await upperPool.query(
 			CREATE_VIEW
@@ -295,6 +308,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				.replace(/\$4/g, pgEscape.string(table.tablename))
 				.replace('$5', pgEscape.string(upperDeletedSchemaName))
 				.replace('$6', pgEscape.string(table.tablename))
+
 				.replace(
 					'$7',
 					table.primaryKeys
@@ -315,6 +329,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 						))
 						.join(' AND ')
 				)
+
 				.replace(
 					'$8',
 					[
@@ -325,6 +340,59 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 						].join('.'),
 						'IS NULL',
 					].join(' '),
+				)
+
+				.replace('$9', pgEscape.string(upperInsertedSchemaName))
+				.replace('$A', pgEscape.string(table.tablename))
+
+				.replace(
+					'$B',
+					table.columns
+						.map(column => (
+							[
+								'CASE WHEN',
+								[
+									pgEscape.string(upperInsertedSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(table.primaryKeys[0].column_name),
+								].join('.'),
+								'IS NOT NULL THEN',
+								[
+									pgEscape.string(upperInsertedSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(column.column_name),
+								].join('.'),
+								'ELSE',
+								[
+									pgEscape.string(upperSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(column.column_name),
+								].join('.'),
+								'END',
+							].join(' ')
+						))
+						.join(', ')
+				)
+
+				.replace(
+					'$C',
+					table.primaryKeys
+						.map(primaryKey => (
+							[
+								[
+									pgEscape.string(upperSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(primaryKey.column_name),
+								].join('.'),
+								'=',
+								[
+									pgEscape.string(upperInsertedSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(primaryKey.column_name),
+								].join('.'),
+							].join(' ')
+						))
+						.join(' AND ')
 				)
 		);
 
@@ -341,6 +409,40 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 					table.primaryKeys
 						.map(primaryKey => 'OLD.' + pgEscape.string(primaryKey.column_name))
 						.join(', ')
+				)
+		);
+
+		await upperPool.query(
+			CREATE_UPDATE_RULE
+				.replace('$1', pgEscape.string(upperUpdateRuleSchemaName))
+				.replace('$2', pgEscape.string(table.tablename))
+				.replace('$3', pgEscape.string(table.schemaname))
+				.replace('$4', pgEscape.string(table.tablename))
+				.replace('$5', pgEscape.string(upperInsertedSchemaName))
+				.replace('$6', pgEscape.string(table.tablename))
+				.replace(
+					'$7',
+					table.columns
+						.map(column => 'NEW.' + pgEscape.string(column.column_name))
+						.join(', ')
+				)
+				.replace(
+					'$8',
+					table.primaryKeys
+						.map(primaryKey => pgEscape.string(primaryKey.column_name))
+						.join(', '),
+				)
+				.replace(
+					'$9',
+					table.columns
+						.map(column => (
+							[
+								pgEscape.string(column.column_name),
+								'=',
+								'EXCLUDED.' + pgEscape.string(column.column_name),
+							].join(' ')
+						))
+						.join(', '),
 				)
 		);
 	}));

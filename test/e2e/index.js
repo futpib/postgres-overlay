@@ -64,4 +64,18 @@ tables.forEach(table => {
 
 		t.deepEqual(upperRows, lowerRows);
 	});
+
+	test.serial(`${table.name} update`, async t => {
+		const { upperPool } = t.context;
+
+		await upperPool.query(
+			`UPDATE ${table.name} SET text = 'foo' WHERE ${table.integerColumnName} = 3;`
+		);
+
+		const { rows: upperRows } = await upperPool.query(
+			`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} = 3 AND text = 'foo';`
+		);
+
+		t.deepEqual(upperRows.length, 1);
+	});
 });
