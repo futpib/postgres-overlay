@@ -27,22 +27,41 @@ test.beforeEach(async t => {
 	await upperPool.query('SELECT overlay_reset();');
 });
 
-test.serial('select', async t => {
-	const { lowerPool, upperPool } = t.context;
+const tables = [
+	{
+		name: 'various_types',
+		integerColumnName: 'id',
+	},
+	{
+		name: 'compound_primary_key',
+		integerColumnName: 'foo_id',
+	},
+];
 
-	const { rows: lowerRows } = await lowerPool.query('SELECT * FROM various_types;');
-	const { rows: upperRows } = await upperPool.query('SELECT * FROM various_types;');
+tables.forEach(table => {
+	test.serial(`${table.name} select`, async t => {
+		const { lowerPool, upperPool } = t.context;
 
-	t.deepEqual(upperRows, lowerRows);
-});
+		const { rows: lowerRows } = await lowerPool.query(`SELECT * FROM ${table.name};`);
+		const { rows: upperRows } = await upperPool.query(`SELECT * FROM ${table.name};`);
 
-test.serial('delete', async t => {
-	const { lowerPool, upperPool } = t.context;
+		t.deepEqual(upperRows, lowerRows);
+	});
 
-	await upperPool.query('DELETE FROM various_types WHERE id = 3;');
+	test.serial(`${table.name} delete`, async t => {
+		const { lowerPool, upperPool } = t.context;
 
-	const { rows: lowerRows } = await lowerPool.query('SELECT * FROM various_types WHERE id != 3;');
-	const { rows: upperRows } = await upperPool.query('SELECT * FROM various_types;');
+		await upperPool.query(
+			`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = 3;`
+		);
 
-	t.deepEqual(upperRows, lowerRows);
+		const { rows: lowerRows } = await lowerPool.query(
+			`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} != 3;`
+		);
+		const { rows: upperRows } = await upperPool.query(
+			`SELECT * FROM ${table.name};`
+		);
+
+		t.deepEqual(upperRows, lowerRows);
+	});
 });

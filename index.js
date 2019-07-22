@@ -228,12 +228,24 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				.replace('$2', pgEscape.string(table.tablename))
 				.replace(
 					'$3',
-					table.primaryKeys
-						.map(primaryKey => [
-							primaryKey.column_name,
-							primaryKey.data_type,
-							'NOT NULL',
-						].join(' '))
+					[
+						...table.primaryKeys
+							.map(primaryKey => (
+								[
+									primaryKey.column_name,
+									primaryKey.data_type,
+									'NOT NULL',
+								].join(' ')
+							)),
+
+						[
+							'PRIMARY KEY (',
+							table.primaryKeys
+								.map(primaryKey => primaryKey.column_name)
+								.join(', '),
+							')',
+						].join(' '),
+					].join(', ')
 				)
 		);
 	}));
@@ -249,12 +261,21 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				.replace('$2', pgEscape.string(table.tablename))
 				.replace(
 					'$3',
-					table.columns
-						.map(column => [
-							column.column_name,
-							column.data_type,
-							!column.is_nullable && 'NOT NULL',
-						].filter(Boolean).join(' '))
+					[
+						...table.columns
+							.map(column => [
+								column.column_name,
+								column.data_type,
+								!column.is_nullable && 'NOT NULL',
+							].filter(Boolean).join(' ')),
+						[
+							'PRIMARY KEY (',
+							table.primaryKeys
+								.map(primaryKey => primaryKey.column_name)
+								.join(', '),
+							')',
+						].join(' '),
+					].join(', ')
 				)
 		);
 	}));
