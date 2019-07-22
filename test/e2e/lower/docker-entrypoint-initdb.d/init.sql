@@ -1,7 +1,7 @@
 
 CREATE TABLE various_types
   ( id SERIAL PRIMARY KEY
-  , text text NOT NULL
+  , text text NOT NULL DEFAULT 'default_text'
   , timestamp timestamp
   , array_array_integer integer[][]
   );

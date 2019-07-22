@@ -117,7 +117,7 @@ const CREATE_READ_ONLY_VIEW = `CREATE OR REPLACE VIEW $1.$2
 AS SELECT *
 FROM $3.$4;`;
 
-const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION $1.$2()
+const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION $1.$2__$4()
 RETURNS $3
 AS $$
 BEGIN
@@ -130,7 +130,7 @@ $$ LANGUAGE plpgsql;`;
 
 const ALTER_VIEW_DEFAULT = `ALTER VIEW $1.$2
 ALTER COLUMN $3
-SET DEFAULT $4.$5();`;
+SET DEFAULT $4.$5__$3();`;
 
 const CREATE_DELETE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON DELETE TO $3.$4
 DO INSTEAD
@@ -469,7 +469,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 							.replace('$1', pgEscape.string(upperDefaultFunctionSchemaName))
 							.replace('$2', pgEscape.string(table.tablename))
 							.replace('$3', pgEscape.string(column.data_type))
-							.replace('$4', pgEscape.string(column.column_name))
+							.replace(/\$4/g, pgEscape.string(column.column_name))
 							.replace('$5', pgEscape.string(table.schemaname))
 							.replace('$6', pgEscape.string(table.tablename))
 					);
@@ -478,7 +478,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 						ALTER_VIEW_DEFAULT
 							.replace('$1', pgEscape.string(table.schemaname))
 							.replace('$2', pgEscape.string(table.tablename))
-							.replace('$3', pgEscape.string(column.column_name))
+							.replace(/\$3/g, pgEscape.string(column.column_name))
 							.replace('$4', pgEscape.string(upperDefaultFunctionSchemaName))
 							.replace('$5', pgEscape.string(table.tablename))
 					);
