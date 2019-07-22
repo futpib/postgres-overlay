@@ -5,8 +5,10 @@ node_js:
 
 script:
   - yarn test
-  - cd test/e2e
+  - pushd test/e2e
   - docker-compose run postgres-overlay
+  - popd
 
 after_success:
+  - 'find ./.nyc_output -type f -name "*.json" | xargs perl -i -pe "s#/usr/src/app#.#g"'
   - './node_modules/.bin/nyc report --reporter=text-lcov | ./node_modules/.bin/coveralls'
