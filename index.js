@@ -1,4 +1,6 @@
 
+const invariant = require('invariant');
+
 const {
 	map,
 	pipe,
@@ -20,6 +22,41 @@ const {
 
 const { Pool } = require('pg');
 const pgEscape = require('pg-escape');
+
+const escapeIdentifier = string => {
+	invariant(
+		string && typeof string === 'string',
+		'Expected non-empty string (identifier to escape), instead got: %s',
+		string,
+	);
+	return pgEscape.ident(string);
+};
+
+const substitute = (query, values) => {
+	try {
+		return query.replace(/#\{(.+?)\}/g, (_, key) => {
+			const value = values[key];
+
+			if (Array.isArray(value)) {
+				return value.map(escapeIdentifier).join('.');
+			}
+
+			if (value.unsafe) {
+				return value.unsafe;
+			}
+
+			return escapeIdentifier(value);
+		});
+	} catch (error) {
+		console.warn(
+			'An error occured while substituting query:',
+			query,
+			'with values:',
+			values,
+		);
+		throw error;
+	}
+};
 
 const poolOptionsFromEnv = ({ envPrefix, processEnv }) => pipe([
 	pairs,
@@ -86,78 +123,78 @@ const CREATE_FDW_EXTENSION_QUERY = 'CREATE EXTENSION IF NOT EXISTS postgres_fdw;
 
 const CREATE_FDW_SERVER_QUERY = `CREATE SERVER IF NOT EXISTS lower
 FOREIGN DATA WRAPPER postgres_fdw
-OPTIONS (host $1, port $2, dbname $3, updatable 'false');`;
+OPTIONS (host #{host}, port #{port}, dbname #{dbname}, updatable 'false');`;
 
-const CREATE_USER_MAPPING_QUERY = `CREATE USER MAPPING IF NOT EXISTS FOR $1
+const CREATE_USER_MAPPING_QUERY = `CREATE USER MAPPING IF NOT EXISTS FOR #{user_ident}
 SERVER lower
-OPTIONS (user $2, password $3);`;
+OPTIONS (user #{user}, password #{password});`;
 
-const CREATE_SCHEMA_QUERY = 'CREATE SCHEMA IF NOT EXISTS $1;';
+const CREATE_SCHEMA_QUERY = 'CREATE SCHEMA IF NOT EXISTS #{name};';
 
 const EXISTING_TABLES_QUERY = `SELECT DISTINCT table_name
 FROM information_schema.tables
 WHERE table_schema = $1;`;
 
-const IMPORT_FOREIGN_SCHEMA_QUERY = `IMPORT FOREIGN SCHEMA $1
-EXCEPT ($2)
-FROM SERVER lower INTO $3;`;
+const IMPORT_FOREIGN_SCHEMA_QUERY = `IMPORT FOREIGN SCHEMA #{foreign_name}
+EXCEPT (#{except})
+FROM SERVER lower INTO #{local_name};`;
 
-const CREATE_TABLE = 'CREATE TABLE IF NOT EXISTS $1.$2 ($3);';
+const CREATE_TABLE = 'CREATE TABLE IF NOT EXISTS #{table_name} (#{columns});';
 
-const CREATE_VIEW = `CREATE OR REPLACE VIEW $1.$2
-AS SELECT $B
-FROM $3.$4
-	LEFT JOIN $5.$6
-		ON $7
-	FULL OUTER JOIN $9.$A
-		ON $C
-WHERE $8;`;
-
-const CREATE_READ_ONLY_VIEW = `CREATE OR REPLACE VIEW $1.$2
+const CREATE_READ_ONLY_VIEW = `CREATE OR REPLACE VIEW #{view_name}
 AS SELECT *
-FROM $3.$4;`;
+FROM #{foreign_table_name};`;
 
-const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION $1.$2__$4()
-RETURNS $3
+const CREATE_VIEW = `CREATE OR REPLACE VIEW #{view_name} AS
+SELECT #{select_expressions}
+FROM #{foreign_table_name}
+	LEFT JOIN #{deleted_table_name}
+		ON #{deleted_join_condition}
+	FULL OUTER JOIN #{inserted_table_name}
+		ON #{inserted_join_condition}
+WHERE #{where_condition};`;
+
+const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION #{function_name}()
+RETURNS #{return_type}
 AS $$
 BEGIN
 RETURN 1 + (
-	SELECT MAX($4)
-	FROM $5.$6
+	SELECT MAX(#{column_name})
+	FROM #{table_name}
 );
 END
 $$ LANGUAGE plpgsql;`;
 
-const ALTER_VIEW_DEFAULT = `ALTER VIEW $1.$2
-ALTER COLUMN $3
-SET DEFAULT $4.$5__$3();`;
+const ALTER_VIEW_DEFAULT = `ALTER VIEW #{view_name}
+ALTER COLUMN #{column_name}
+SET DEFAULT #{function_name}();`;
 
-const CREATE_DELETE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON DELETE TO $3.$4
+const CREATE_DELETE_RULE = `CREATE OR REPLACE RULE #{rule_name} AS ON DELETE TO #{table_name}
 DO INSTEAD (
-	INSERT INTO $5.$6 VALUES ($7);
-	DELETE FROM $8.$9 WHERE $A;
+	INSERT INTO #{deleted_table_name} VALUES (#{deleted_primary_key});
+	DELETE FROM #{inserted_table_name} WHERE (#{inserted_where_condition});
 );`;
 
-const CREATE_UPDATE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON UPDATE TO $3.$4
+const CREATE_UPDATE_RULE = `CREATE OR REPLACE RULE #{rule_name} AS ON UPDATE TO #{table_name}
 DO INSTEAD
-INSERT INTO $5.$6 VALUES ($7)
-ON CONFLICT ($8) DO UPDATE SET $9;`;
+INSERT INTO #{inserted_table_name} VALUES (#{inserted_values})
+ON CONFLICT (#{inserted_primary_key}) DO UPDATE SET #{update_expression};`;
 
-const CREATE_INSERT_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON INSERT TO $3.$4
+const CREATE_INSERT_RULE = `CREATE OR REPLACE RULE #{rule_name} AS ON INSERT TO #{table_name}
 DO INSTEAD (
-	DELETE FROM $5.$6 WHERE $7;
-	INSERT INTO $8.$9 VALUES ($A) RETURNING *;
+	DELETE FROM #{deleted_table_name} WHERE #{deleted_where_condition};
+	INSERT INTO #{inserted_table_name} VALUES (#{inserted_values}) RETURNING *;
 );`;
 
 const CREATE_RESET_FUNCTION = `CREATE OR REPLACE FUNCTION overlay_reset()
 RETURNS void
 AS $$
 BEGIN
-$1
+#{function_body}
 END
 $$ LANGUAGE plpgsql;`;
 
-const DELETE_FROM_TABLE_QUERY = 'DELETE FROM $1.$2;';
+const DELETE_FROM_TABLE_QUERY = 'DELETE FROM #{table_name};';
 
 const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, lowerPool => withPool(upperOptions, async upperPool => {
 	const result = {
@@ -212,17 +249,25 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 	await upperPool.query(CREATE_FDW_EXTENSION_QUERY);
 
 	await upperPool.query(
-		CREATE_FDW_SERVER_QUERY
-			.replace('$1', pgEscape.literal(lowerOptions.host))
-			.replace('$2', pgEscape.literal(String(lowerOptions.port)))
-			.replace('$3', pgEscape.literal(lowerOptions.database))
+		substitute(
+			CREATE_FDW_SERVER_QUERY,
+			{
+				host: { unsafe: pgEscape.literal(lowerOptions.host) },
+				port: { unsafe: pgEscape.literal(String(lowerOptions.port)) },
+				dbname: { unsafe: pgEscape.literal(lowerOptions.database) },
+			},
+		)
 	);
 
 	await upperPool.query(
-		CREATE_USER_MAPPING_QUERY
-			.replace('$1', pgEscape.string(upperOptions.user))
-			.replace('$2', pgEscape.literal(lowerOptions.user))
-			.replace('$3', pgEscape.literal(lowerOptions.password))
+		substitute(
+			CREATE_USER_MAPPING_QUERY,
+			{
+				user_ident: upperOptions.user,
+				user: { unsafe: pgEscape.literal(lowerOptions.user) },
+				password: { unsafe: pgEscape.literal(lowerOptions.password) },
+			},
+		)
 	);
 
 	const lowerSchemas = pipe([
@@ -234,8 +279,12 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 		const upperSchemaName = schemaNameMapper(schemaname);
 
 		await upperPool.query(
-			CREATE_SCHEMA_QUERY
-				.replace('$1', pgEscape.string(upperSchemaName))
+			substitute(
+				CREATE_SCHEMA_QUERY,
+				{
+					name: upperSchemaName,
+				},
+			)
 		);
 	}));
 
@@ -252,18 +301,21 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 		);
 
 		await upperPool.query(
-			IMPORT_FOREIGN_SCHEMA_QUERY
-				.replace('$1', pgEscape.string(schemaname))
-				.replace(
-					'$2',
-					existingTables
-						.concat([ {
-							table_name: '_postgres_overlay_hack_unique_table_name_that_should_never_exist',
-						} ])
-						.map(row => pgEscape.string(row.table_name))
-						.join(', ')
-				)
-				.replace('$3', pgEscape.string(upperSchemaName))
+			substitute(
+				IMPORT_FOREIGN_SCHEMA_QUERY,
+				{
+					foreign_name: schemaname,
+					local_name: upperSchemaName,
+					except: {
+						unsafe: existingTables
+							.concat([ {
+								table_name: '_postgres_overlay_hack_unique_table_name_that_should_never_exist',
+							} ])
+							.map(row => escapeIdentifier(row.table_name))
+							.join(', '),
+					},
+				},
+			)
 		);
 	}));
 
@@ -274,19 +326,18 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 			return;
 		}
 
-		const upperSchemaName = lowerSchemaNameToUpperDeletedSchemaName(table.schemaname);
+		const upperDeletedSchemaName = lowerSchemaNameToUpperDeletedSchemaName(table.schemaname);
 
 		await upperPool.query(
-			CREATE_TABLE
-				.replace('$1', pgEscape.string(upperSchemaName))
-				.replace('$2', pgEscape.string(table.tablename))
-				.replace(
-					'$3',
-					[
+			substitute(
+				CREATE_TABLE,
+				{
+					table_name: [ upperDeletedSchemaName, table.tablename ],
+					columns: { unsafe: [
 						...table.primaryKeys
 							.map(primaryKey => (
 								[
-									primaryKey.column_name,
+									escapeIdentifier(primaryKey.column_name),
 									primaryKey.data_type,
 									'NOT NULL',
 								].join(' ')
@@ -295,12 +346,13 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 						[
 							'PRIMARY KEY (',
 							table.primaryKeys
-								.map(primaryKey => primaryKey.column_name)
+								.map(primaryKey => escapeIdentifier(primaryKey.column_name))
 								.join(', '),
 							')',
 						].join(' '),
-					].join(', ')
-				)
+					].join(', ') },
+				},
+			)
 		);
 	}));
 
@@ -311,30 +363,30 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 			return;
 		}
 
-		const upperSchemaName = lowerSchemaNameToUpperInsertedSchemaName(table.schemaname);
+		const upperInsertedSchemaName = lowerSchemaNameToUpperInsertedSchemaName(table.schemaname);
 
 		await upperPool.query(
-			CREATE_TABLE
-				.replace('$1', pgEscape.string(upperSchemaName))
-				.replace('$2', pgEscape.string(table.tablename))
-				.replace(
-					'$3',
-					[
+			substitute(
+				CREATE_TABLE,
+				{
+					table_name: [ upperInsertedSchemaName, table.tablename ],
+					columns: { unsafe: [
 						...table.columns
 							.map(column => [
-								column.column_name,
+								escapeIdentifier(column.column_name),
 								column.data_type,
 								!column.is_nullable && 'NOT NULL',
 							].filter(Boolean).join(' ')),
 						[
 							'PRIMARY KEY (',
 							table.primaryKeys
-								.map(primaryKey => primaryKey.column_name)
+								.map(primaryKey => escapeIdentifier(primaryKey.column_name))
 								.join(', '),
 							')',
 						].join(' '),
-					].join(', ')
-				)
+					].join(', ') },
+				}
+			)
 		);
 	}));
 
@@ -354,110 +406,105 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 
 		if (table.readOnly) {
 			await upperPool.query(
-				CREATE_READ_ONLY_VIEW
-					.replace('$1', pgEscape.string(table.schemaname))
-					.replace('$2', pgEscape.string(table.tablename))
-					.replace('$3', pgEscape.string(upperSchemaName))
-					.replace('$4', pgEscape.string(table.tablename))
+				substitute(
+					CREATE_READ_ONLY_VIEW,
+					{
+						view_name: [ table.schemaname, table.tablename ],
+						foreign_table_name: [ upperSchemaName, table.tablename ],
+					},
+				)
 			);
 
 			return;
 		}
 
 		await upperPool.query(
-			CREATE_VIEW
-				.replace('$1', pgEscape.string(table.schemaname))
-				.replace('$2', pgEscape.string(table.tablename))
-				.replace('$3', pgEscape.string(upperSchemaName))
-				.replace('$4', pgEscape.string(table.tablename))
-				.replace('$5', pgEscape.string(upperDeletedSchemaName))
-				.replace('$6', pgEscape.string(table.tablename))
+			substitute(
+				CREATE_VIEW,
+				{
+					view_name: [ table.schemaname, table.tablename ],
+					foreign_table_name: [ upperSchemaName, table.tablename ],
+					deleted_table_name: [ upperDeletedSchemaName, table.tablename ],
+					inserted_table_name: [ upperInsertedSchemaName, table.tablename ],
 
-				.replace(
-					'$7',
-					table.primaryKeys
-						.map(primaryKey => (
-							[
+					select_expressions: { unsafe: (
+						table.columns
+							.map(column => (
 								[
-									pgEscape.string(upperSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(primaryKey.column_name),
-								].join('.'),
-								'=',
-								[
-									pgEscape.string(upperDeletedSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(primaryKey.column_name),
-								].join('.'),
-							].join(' ')
-						))
-						.join(' AND ')
-				)
+									'CASE WHEN',
+									[
+										escapeIdentifier(upperInsertedSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(table.primaryKeys[0].column_name),
+									].join('.'),
+									'IS NOT NULL THEN',
+									[
+										escapeIdentifier(upperInsertedSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(column.column_name),
+									].join('.'),
+									'ELSE',
+									[
+										escapeIdentifier(upperSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(column.column_name),
+									].join('.'),
+									'END',
+								].join(' ')
+							))
+							.join(', ')
+					) },
 
-				.replace(
-					'$8',
-					[
+					deleted_join_condition: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => (
+								[
+									[
+										escapeIdentifier(upperSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+									'=',
+									[
+										escapeIdentifier(upperDeletedSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+								].join(' ')
+							))
+							.join(' AND ')
+					) },
+
+					inserted_join_condition: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => (
+								[
+									[
+										escapeIdentifier(upperSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+									'=',
+									[
+										escapeIdentifier(upperInsertedSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+								].join(' ')
+							))
+							.join(' AND ')
+					) },
+
+					where_condition: { unsafe: [
 						[
-							pgEscape.string(upperDeletedSchemaName),
-							pgEscape.string(table.tablename),
-							pgEscape.string(table.primaryKeys[0].column_name),
+							escapeIdentifier(upperDeletedSchemaName),
+							escapeIdentifier(table.tablename),
+							escapeIdentifier(table.primaryKeys[0].column_name),
 						].join('.'),
 						'IS NULL',
-					].join(' '),
-				)
-
-				.replace('$9', pgEscape.string(upperInsertedSchemaName))
-				.replace('$A', pgEscape.string(table.tablename))
-
-				.replace(
-					'$B',
-					table.columns
-						.map(column => (
-							[
-								'CASE WHEN',
-								[
-									pgEscape.string(upperInsertedSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(table.primaryKeys[0].column_name),
-								].join('.'),
-								'IS NOT NULL THEN',
-								[
-									pgEscape.string(upperInsertedSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(column.column_name),
-								].join('.'),
-								'ELSE',
-								[
-									pgEscape.string(upperSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(column.column_name),
-								].join('.'),
-								'END',
-							].join(' ')
-						))
-						.join(', ')
-				)
-
-				.replace(
-					'$C',
-					table.primaryKeys
-						.map(primaryKey => (
-							[
-								[
-									pgEscape.string(upperSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(primaryKey.column_name),
-								].join('.'),
-								'=',
-								[
-									pgEscape.string(upperInsertedSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(primaryKey.column_name),
-								].join('.'),
-							].join(' ')
-						))
-						.join(' AND ')
-				)
+					].join(' ') },
+				}
+			)
 		);
 
 		await Promise.all(
@@ -466,154 +513,162 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				.map(async column => {
 					const upperDefaultFunctionSchemaName = lowerSchemaNameToUpperDefaultFunctionSchemaName(table.schemaname);
 
+					const functionName = [
+						upperDefaultFunctionSchemaName,
+						escapeIdentifier([
+							table.tablename,
+							column.column_name,
+						].join('__')),
+					];
+
 					await upperPool.query(
-						CREATE_DEFAULT_FUNCTION
-							.replace('$1', pgEscape.string(upperDefaultFunctionSchemaName))
-							.replace('$2', pgEscape.string(table.tablename))
-							.replace('$3', pgEscape.string(column.data_type))
-							.replace(/\$4/g, pgEscape.string(column.column_name))
-							.replace('$5', pgEscape.string(table.schemaname))
-							.replace('$6', pgEscape.string(table.tablename))
+						substitute(
+							CREATE_DEFAULT_FUNCTION,
+							{
+								function_name: functionName,
+								return_type: column.data_type,
+								column_name: column.column_name,
+								table_name: [ table.schemaname, table.tablename ],
+							},
+						)
 					);
 
 					await upperPool.query(
-						ALTER_VIEW_DEFAULT
-							.replace('$1', pgEscape.string(table.schemaname))
-							.replace('$2', pgEscape.string(table.tablename))
-							.replace(/\$3/g, pgEscape.string(column.column_name))
-							.replace('$4', pgEscape.string(upperDefaultFunctionSchemaName))
-							.replace('$5', pgEscape.string(table.tablename))
+						substitute(
+							ALTER_VIEW_DEFAULT,
+							{
+								function_name: functionName,
+								view_name: [ table.schemaname, table.tablename ],
+								column_name: column.column_name,
+							},
+						)
 					);
 				})
 		);
 
 		await upperPool.query(
-			CREATE_DELETE_RULE
-				.replace('$1', pgEscape.string(upperDeleteRuleSchemaName))
-				.replace('$2', pgEscape.string(table.tablename))
-				.replace('$3', pgEscape.string(table.schemaname))
-				.replace('$4', pgEscape.string(table.tablename))
-				.replace('$5', pgEscape.string(upperDeletedSchemaName))
-				.replace('$6', pgEscape.string(table.tablename))
+			substitute(
+				CREATE_DELETE_RULE,
+				{
+					rule_name: [ upperDeleteRuleSchemaName, table.tablename ].join('__'),
+					table_name: [ table.schemaname, table.tablename ],
+					deleted_table_name: [ upperDeletedSchemaName, table.tablename ],
+					inserted_table_name: [ upperInsertedSchemaName, table.tablename ],
 
-				.replace(
-					'$7',
-					table.primaryKeys
-						.map(primaryKey => 'OLD.' + pgEscape.string(primaryKey.column_name))
-						.join(', ')
-				)
+					deleted_primary_key: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => 'OLD.' + escapeIdentifier(primaryKey.column_name))
+							.join(', ')
+					) },
 
-				.replace('$8', pgEscape.string(upperInsertedSchemaName))
-				.replace('$9', pgEscape.string(table.tablename))
-
-				.replace(
-					'$A',
-					table.primaryKeys
-						.map(primaryKey => (
-							[
+					inserted_where_condition: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => (
 								[
-									pgEscape.string(upperInsertedSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(primaryKey.column_name),
-								].join('.'),
-								'=',
-								'OLD.' + pgEscape.string(primaryKey.column_name),
-							].join(' ')
-						))
-						.join(' AND ')
-				)
+									[
+										escapeIdentifier(upperInsertedSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+									'=',
+									'OLD.' + escapeIdentifier(primaryKey.column_name),
+								].join(' ')
+							))
+							.join(' AND ')
+					) },
+				},
+			)
 		);
 
 		await upperPool.query(
-			CREATE_UPDATE_RULE
-				.replace('$1', pgEscape.string(upperUpdateRuleSchemaName))
-				.replace('$2', pgEscape.string(table.tablename))
-				.replace('$3', pgEscape.string(table.schemaname))
-				.replace('$4', pgEscape.string(table.tablename))
-				.replace('$5', pgEscape.string(upperInsertedSchemaName))
-				.replace('$6', pgEscape.string(table.tablename))
+			substitute(
+				CREATE_UPDATE_RULE,
+				{
+					rule_name: [ upperUpdateRuleSchemaName, table.tablename ].join('__'),
+					table_name: [ table.schemaname, table.tablename ],
+					inserted_table_name: [ upperInsertedSchemaName, table.tablename ],
 
-				.replace(
-					'$7',
-					table.columns
-						.map(column => 'NEW.' + pgEscape.string(column.column_name))
-						.join(', ')
-				)
+					inserted_values: { unsafe: (
+						table.columns
+							.map(column => 'NEW.' + escapeIdentifier(column.column_name))
+							.join(', ')
+					) },
 
-				.replace(
-					'$8',
-					table.primaryKeys
-						.map(primaryKey => pgEscape.string(primaryKey.column_name))
-						.join(', '),
-				)
+					inserted_primary_key: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => escapeIdentifier(primaryKey.column_name))
+							.join(', ')
+					) },
 
-				.replace(
-					'$9',
-					table.columns
-						.map(column => (
-							[
-								pgEscape.string(column.column_name),
-								'=',
-								'EXCLUDED.' + pgEscape.string(column.column_name),
-							].join(' ')
-						))
-						.join(', '),
-				)
+					update_expression: { unsafe: (
+						table.columns
+							.map(column => (
+								[
+									escapeIdentifier(column.column_name),
+									'=',
+									'EXCLUDED.' + escapeIdentifier(column.column_name),
+								].join(' ')
+							))
+							.join(', ')
+					) },
+				},
+			)
 		);
 
 		await upperPool.query(
-			CREATE_INSERT_RULE
-				.replace('$1', pgEscape.string(upperInsertRuleSchemaName))
-				.replace('$2', pgEscape.string(table.tablename))
-				.replace('$3', pgEscape.string(table.schemaname))
-				.replace('$4', pgEscape.string(table.tablename))
-				.replace('$5', pgEscape.string(upperDeletedSchemaName))
-				.replace('$6', pgEscape.string(table.tablename))
+			substitute(
+				CREATE_INSERT_RULE,
+				{
+					rule_name: [ upperInsertRuleSchemaName, table.tablename ].join('__'),
+					table_name: [ table.schemaname, table.tablename ],
+					deleted_table_name: [ upperDeletedSchemaName, table.tablename ],
+					inserted_table_name: [ upperInsertedSchemaName, table.tablename ],
 
-				.replace(
-					'$7',
-					table.primaryKeys
-						.map(primaryKey => (
-							[
+					deleted_where_condition: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => (
 								[
-									pgEscape.string(upperDeletedSchemaName),
-									pgEscape.string(table.tablename),
-									pgEscape.string(primaryKey.column_name),
-								].join('.'),
-								'=',
-								'NEW.' + pgEscape.string(primaryKey.column_name),
-							].join(' ')
-						))
-						.join(' AND ')
-				)
+									[
+										escapeIdentifier(upperDeletedSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+									'=',
+									'NEW.' + escapeIdentifier(primaryKey.column_name),
+								].join(' ')
+							))
+							.join(' AND ')
+					) },
 
-				.replace('$8', pgEscape.string(upperInsertedSchemaName))
-				.replace('$9', pgEscape.string(table.tablename))
-
-				.replace(
-					'$A',
-					table.columns
-						.map(column => 'NEW.' + pgEscape.string(column.column_name))
-						.join(', '),
-				)
+					inserted_values: { unsafe: (
+						table.columns
+							.map(column => 'NEW.' + escapeIdentifier(column.column_name))
+							.join(', ')
+					) },
+				},
+			)
 		);
 	}));
 
 	await upperPool.query(
-		CREATE_RESET_FUNCTION
-			.replace(
-				'$1',
-				chain(table => table.readOnly ? [] : (
-					[
-						lowerSchemaNameToUpperDeletedSchemaName,
-						lowerSchemaNameToUpperInsertedSchemaName,
-					].map(schemaNameMapper => (
-						DELETE_FROM_TABLE_QUERY
-							.replace('$1', schemaNameMapper(table.schemaname))
-							.replace('$2', pgEscape.string(table.tablename))
-					))
-				))(lowerTables).join('\n'),
-			),
+		substitute(
+			CREATE_RESET_FUNCTION,
+			{
+				function_body: { unsafe: (
+					chain(table => table.readOnly ? [] : (
+						[
+							lowerSchemaNameToUpperDeletedSchemaName,
+							lowerSchemaNameToUpperInsertedSchemaName,
+						].map(schemaNameMapper => substitute(
+							DELETE_FROM_TABLE_QUERY,
+							{
+								table_name: [ schemaNameMapper(table.schemaname), table.tablename ],
+							},
+						))
+					))(lowerTables).join('\n')
+				) },
+			}
+		),
 	);
 
 	return result;
@@ -628,4 +683,5 @@ module.exports = {
 	main,
 	setupOverlay,
 	poolOptionsFromEnv,
+	substitute,
 };

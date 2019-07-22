@@ -23,8 +23,19 @@ FROM generate_series(0, 7);
 
 CREATE TABLE no_primary_key
   ( text text
+  , integer integer
   );
 
 INSERT INTO no_primary_key
 SELECT md5(random()::text)
 FROM generate_series(0, 7);
+
+CREATE TABLE U&"weird_name_\0441\043B\043E\043D_$1"
+  ( U&"id1_\0441\043B\043E\043D_$1" SERIAL
+  , "id2_\n$\r\'\t`\b_$1" SERIAL
+  , text text
+  , PRIMARY KEY (U&"id1_\0441\043B\043E\043D_$1", "id2_\n$\r\'\t`\b_$1")
+  );
+
+INSERT INTO U&"weird_name_\0441\043B\043E\043D_$1"
+VALUES (3, 3, 'initial_text_value')

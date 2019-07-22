@@ -11,7 +11,17 @@ import test from 'ava';
 
 import pgEscape from 'pg-escape';
 
-import { poolOptionsFromEnv, main } from '../..';
+import {
+	main,
+	poolOptionsFromEnv,
+} from '../..';
+
+const sql = (strings, ...identifiers) => {
+	identifiers = identifiers.map(s => pgEscape.ident(s));
+	return strings
+		.map((string, index) => identifiers[index] ? (string + identifiers[index]) : string)
+		.join('');
+};
 
 const { Pool } = require('pg');
 
@@ -38,6 +48,11 @@ test.before(async t => {
 			readOnly: false,
 			schemaName: 'public',
 			tableName: 'various_types',
+		},
+		{
+			readOnly: false,
+			schemaName: 'public',
+			tableName: 'weird_name_слон_$1',
 		},
 	]);
 });
@@ -80,8 +95,18 @@ const tables = [
 	{
 		name: 'no_primary_key',
 		readOnly: true,
+		integerColumnName: 'integer',
 		insertValues: [
 			pgEscape.literal('foo'),
+		],
+	},
+
+	{
+		name: 'weird_name_слон_$1',
+		integerColumnName: 'id1_слон_$1',
+		insertValues: [
+			4,
+			4,
 		],
 	},
 ];
@@ -89,8 +114,8 @@ const tables = [
 const selectMacro = async (t, table) => {
 	const { lowerPool, upperPool } = t.context;
 
-	const { rows: lowerRows } = await lowerPool.query(`SELECT * FROM ${table.name};`);
-	const { rows: upperRows } = await upperPool.query(`SELECT * FROM ${table.name};`);
+	const { rows: lowerRows } = await lowerPool.query(sql`SELECT * FROM ${table.name};`);
+	const { rows: upperRows } = await upperPool.query(sql`SELECT * FROM ${table.name};`);
 
 	t.deepEqual(upperRows, lowerRows);
 };
@@ -102,14 +127,14 @@ tables.filter(table => !table.readOnly).forEach(table => {
 		const { lowerPool, upperPool } = t.context;
 
 		await upperPool.query(
-			`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = 3;`
+			sql`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = 3;`
 		);
 
 		const { rows: lowerRows } = await lowerPool.query(
-			`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} != 3;`
+			sql`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} != 3;`
 		);
 		const { rows: upperRows } = await upperPool.query(
-			`SELECT * FROM ${table.name};`
+			sql`SELECT * FROM ${table.name};`
 		);
 
 		t.deepEqual(upperRows, lowerRows);
@@ -119,11 +144,11 @@ tables.filter(table => !table.readOnly).forEach(table => {
 		const { upperPool } = t.context;
 
 		await upperPool.query(
-			`UPDATE ${table.name} SET text = 'foo' WHERE ${table.integerColumnName} = 3;`
+			sql`UPDATE ${table.name} SET text = 'foo' WHERE ${table.integerColumnName} = 3;`
 		);
 
 		const { rows: upperRows } = await upperPool.query(
-			`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} = 3 AND text = 'foo';`
+			sql`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} = 3 AND text = 'foo';`
 		);
 
 		t.deepEqual(upperRows.length, 1);
@@ -135,15 +160,15 @@ tables.filter(table => !table.readOnly).forEach(table => {
 		const values = table.insertValues.join(', ');
 
 		await upperPool.query(
-			`INSERT INTO ${table.name} VALUES (${values});`
+			(sql`INSERT INTO ${table.name} VALUES`) + `(${values});`
 		);
 
 		const { rows: upperRows } = await upperPool.query(
-			`SELECT * FROM ${table.name};`
+			sql`SELECT * FROM ${table.name};`
 		);
 
 		const { rows: lowerRows } = await lowerPool.query(
-			`SELECT * FROM ${table.name};`
+			sql`SELECT * FROM ${table.name};`
 		);
 
 		const anyEquals = x => any(equals(x));
@@ -156,21 +181,21 @@ tables.filter(table => !table.readOnly).forEach(table => {
 		const { upperPool } = t.context;
 
 		const { rows: rowsBefore } = await upperPool.query(
-			`SELECT * FROM ${table.name};`
+			sql`SELECT * FROM ${table.name};`
 		);
 
 		const values = table.insertValues.join(', ');
 
 		const { rows: [ row ] } = await upperPool.query(
-			`INSERT INTO ${table.name} VALUES (${values}) RETURNING *;`
+			(sql`INSERT INTO ${table.name} VALUES`) + ` (${values}) RETURNING *;`
 		);
 
 		await upperPool.query(
-			`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = ${row[table.integerColumnName]};`
+			(sql`DELETE FROM ${table.name} WHERE ${table.integerColumnName}`) + ` = ${row[table.integerColumnName]};`
 		);
 
 		const { rows: rowsAfter } = await upperPool.query(
-			`SELECT * FROM ${table.name};`
+			sql`SELECT * FROM ${table.name};`
 		);
 
 		t.deepEqual(
@@ -185,20 +210,22 @@ tables.filter(table => !table.readOnly).forEach(table => {
 tables.filter(table => table.readOnly).forEach(table => {
 	test.serial(`${table.name} select`, selectMacro, table);
 
+	const errorMessageRegex = /does not allow/;
+
 	test.serial(`${table.name} delete (read-only)`, async t => {
 		const { upperPool } = t.context;
 
 		await t.throwsAsync(() => upperPool.query(
-			`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = 3;`
-		));
+			sql`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = 3;`
+		), errorMessageRegex);
 	});
 
 	test.serial(`${table.name} update (read-only)`, async t => {
 		const { upperPool } = t.context;
 
 		await t.throwsAsync(() => upperPool.query(
-			`UPDATE ${table.name} SET text = 'foo' WHERE true;`
-		));
+			sql`UPDATE ${table.name} SET text = 'foo' WHERE true;`
+		), errorMessageRegex);
 	});
 
 	test.serial(`${table.name} insert (read-only)`, async t => {
@@ -207,8 +234,8 @@ tables.filter(table => table.readOnly).forEach(table => {
 		const values = table.insertValues.join(', ');
 
 		await t.throwsAsync(() => upperPool.query(
-			`INSERT INTO ${table.name} VALUES (${values});`
-		));
+			(sql`INSERT INTO ${table.name} VALUES`) + ` (${values});`
+		), errorMessageRegex);
 	});
 
 	test.serial(`${table.name} select again`, selectMacro, table);
