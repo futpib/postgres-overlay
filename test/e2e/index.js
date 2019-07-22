@@ -59,8 +59,8 @@ const tables = [
 	{
 		name: 'various_types',
 		integerColumnName: 'id',
-		sampleValues: [
-			'DEFAULT',
+		insertValues: [
+			1024,
 			pgEscape.literal('foo'),
 			'NOW()',
 			pgEscape.literal('{{1,2,3},{4,5,6},{7,8,9}}'),
@@ -70,8 +70,8 @@ const tables = [
 	{
 		name: 'compound_primary_key',
 		integerColumnName: 'foo_id',
-		sampleValues: [
-			4,
+		insertValues: [
+			1024,
 			4,
 			pgEscape.literal('foo'),
 		],
@@ -80,7 +80,7 @@ const tables = [
 	{
 		name: 'no_primary_key',
 		readOnly: true,
-		sampleValues: [
+		insertValues: [
 			pgEscape.literal('foo'),
 		],
 	},
@@ -132,7 +132,7 @@ tables.filter(table => !table.readOnly).forEach(table => {
 	test.serial(`${table.name} insert`, async t => {
 		const { lowerPool, upperPool } = t.context;
 
-		const values = table.sampleValues.join(', ');
+		const values = table.insertValues.join(', ');
 
 		await upperPool.query(
 			`INSERT INTO ${table.name} VALUES (${values});`
@@ -150,6 +150,33 @@ tables.filter(table => !table.readOnly).forEach(table => {
 		const newUpperValues = filter(x => !anyEquals(x)(lowerRows))(upperRows);
 
 		t.is(newUpperValues.length, 1);
+	});
+
+	test.serial(`${table.name} insert & delete`, async t => {
+		const { upperPool } = t.context;
+
+		const { rows: rowsBefore } = await upperPool.query(
+			`SELECT * FROM ${table.name};`
+		);
+
+		const values = table.insertValues.join(', ');
+
+		const { rows: [ row ] } = await upperPool.query(
+			`INSERT INTO ${table.name} VALUES (${values}) RETURNING *;`
+		);
+
+		await upperPool.query(
+			`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = ${row[table.integerColumnName]};`
+		);
+
+		const { rows: rowsAfter } = await upperPool.query(
+			`SELECT * FROM ${table.name};`
+		);
+
+		t.deepEqual(
+			sortBy(JSON.stringify)(rowsAfter),
+			sortBy(JSON.stringify)(rowsBefore),
+		);
 	});
 
 	test.serial(`${table.name} select again`, selectMacro, table);
@@ -177,7 +204,7 @@ tables.filter(table => table.readOnly).forEach(table => {
 	test.serial(`${table.name} insert (read-only)`, async t => {
 		const { upperPool } = t.context;
 
-		const values = table.sampleValues.join(', ');
+		const values = table.insertValues.join(', ');
 
 		await t.throwsAsync(() => upperPool.query(
 			`INSERT INTO ${table.name} VALUES (${values});`

@@ -133,8 +133,10 @@ ALTER COLUMN $3
 SET DEFAULT $4.$5__$3();`;
 
 const CREATE_DELETE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON DELETE TO $3.$4
-DO INSTEAD
-INSERT INTO $5.$6 VALUES ($7);`;
+DO INSTEAD (
+	INSERT INTO $5.$6 VALUES ($7);
+	DELETE FROM $8.$9 WHERE $A;
+);`;
 
 const CREATE_UPDATE_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON UPDATE TO $3.$4
 DO INSTEAD
@@ -144,7 +146,7 @@ ON CONFLICT ($8) DO UPDATE SET $9;`;
 const CREATE_INSERT_RULE = `CREATE OR REPLACE RULE $1__$2 AS ON INSERT TO $3.$4
 DO INSTEAD (
 	DELETE FROM $5.$6 WHERE $7;
-	INSERT INTO $8.$9 VALUES ($A);
+	INSERT INTO $8.$9 VALUES ($A) RETURNING *;
 );`;
 
 const CREATE_RESET_FUNCTION = `CREATE OR REPLACE FUNCTION overlay_reset()
@@ -499,6 +501,26 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 					table.primaryKeys
 						.map(primaryKey => 'OLD.' + pgEscape.string(primaryKey.column_name))
 						.join(', ')
+				)
+
+				.replace('$8', pgEscape.string(upperInsertedSchemaName))
+				.replace('$9', pgEscape.string(table.tablename))
+
+				.replace(
+					'$A',
+					table.primaryKeys
+						.map(primaryKey => (
+							[
+								[
+									pgEscape.string(upperInsertedSchemaName),
+									pgEscape.string(table.tablename),
+									pgEscape.string(primaryKey.column_name),
+								].join('.'),
+								'=',
+								'OLD.' + pgEscape.string(primaryKey.column_name),
+							].join(' ')
+						))
+						.join(' AND ')
 				)
 		);
 
