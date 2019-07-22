@@ -113,6 +113,10 @@ FROM $3.$4
 		ON $C
 WHERE $8;`;
 
+const CREATE_READ_ONLY_VIEW = `CREATE OR REPLACE VIEW $1.$2
+AS SELECT *
+FROM $3.$4;`;
+
 const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION $1.$2()
 RETURNS $3
 AS $$
@@ -154,6 +158,10 @@ $$ LANGUAGE plpgsql;`;
 const DELETE_FROM_TABLE_QUERY = 'DELETE FROM $1.$2;';
 
 const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, lowerPool => withPool(upperOptions, async upperPool => {
+	const result = {
+		tables: [],
+	};
+
 	let { rows: lowerTables } = await lowerPool.query(
 		TABLES_QUERY,
 		[
@@ -184,9 +192,18 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 			],
 		);
 
+		const readOnly = primaryKeys.length === 0;
+
+		result.tables.push({
+			schemaName: table.schemaname,
+			tableName: table.tablename,
+			readOnly,
+		});
+
 		return {
 			...table,
 			primaryKeys,
+			readOnly,
 		};
 	}));
 
@@ -251,6 +268,10 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 	await createAllSchemas(lowerSchemaNameToUpperDeletedSchemaName);
 
 	await Promise.all(lowerTables.map(async table => {
+		if (table.readOnly) {
+			return;
+		}
+
 		const upperSchemaName = lowerSchemaNameToUpperDeletedSchemaName(table.schemaname);
 
 		await upperPool.query(
@@ -284,6 +305,10 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 	await createAllSchemas(lowerSchemaNameToUpperInsertedSchemaName);
 
 	await Promise.all(lowerTables.map(async table => {
+		if (table.readOnly) {
+			return;
+		}
+
 		const upperSchemaName = lowerSchemaNameToUpperInsertedSchemaName(table.schemaname);
 
 		await upperPool.query(
@@ -325,12 +350,24 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 		const upperUpdateRuleSchemaName = lowerSchemaNameToUpperUpdateRuleSchemaName(table.schemaname);
 		const upperInsertRuleSchemaName = lowerSchemaNameToUpperInsertRuleSchemaName(table.schemaname);
 
+		if (table.readOnly) {
+			await upperPool.query(
+				CREATE_READ_ONLY_VIEW
+					.replace('$1', pgEscape.string(table.schemaname))
+					.replace('$2', pgEscape.string(table.tablename))
+					.replace('$3', pgEscape.string(upperSchemaName))
+					.replace('$4', pgEscape.string(table.tablename))
+			);
+
+			return;
+		}
+
 		await upperPool.query(
 			CREATE_VIEW
 				.replace('$1', pgEscape.string(table.schemaname))
 				.replace('$2', pgEscape.string(table.tablename))
-				.replace(/\$3/g, pgEscape.string(upperSchemaName))
-				.replace(/\$4/g, pgEscape.string(table.tablename))
+				.replace('$3', pgEscape.string(upperSchemaName))
+				.replace('$4', pgEscape.string(table.tablename))
 				.replace('$5', pgEscape.string(upperDeletedSchemaName))
 				.replace('$6', pgEscape.string(table.tablename))
 
@@ -544,7 +581,7 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 		CREATE_RESET_FUNCTION
 			.replace(
 				'$1',
-				chain(table => (
+				chain(table => table.readOnly ? [] : (
 					[
 						lowerSchemaNameToUpperDeletedSchemaName,
 						lowerSchemaNameToUpperInsertedSchemaName,
@@ -556,6 +593,8 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 				))(lowerTables).join('\n'),
 			),
 	);
+
+	return result;
 }));
 
 const main = () => setupOverlay({

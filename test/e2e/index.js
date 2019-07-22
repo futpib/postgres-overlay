@@ -3,6 +3,8 @@ import {
 	any,
 	equals,
 	filter,
+	prop,
+	sortBy,
 } from 'sanctuary';
 
 import test from 'ava';
@@ -19,7 +21,25 @@ test.before(async t => {
 
 	Object.assign(t.context, { lowerPool, upperPool });
 
-	await main();
+	const result = await main();
+
+	t.deepEqual(sortBy(prop('tableName'))(result.tables), [
+		{
+			readOnly: false,
+			schemaName: 'public',
+			tableName: 'compound_primary_key',
+		},
+		{
+			readOnly: true,
+			schemaName: 'public',
+			tableName: 'no_primary_key',
+		},
+		{
+			readOnly: false,
+			schemaName: 'public',
+			tableName: 'various_types',
+		},
+	]);
 });
 
 test.after.always(async t => {
@@ -45,12 +65,21 @@ const tables = [
 			'NOW()',
 		],
 	},
+
 	{
 		name: 'compound_primary_key',
 		integerColumnName: 'foo_id',
 		sampleValues: [
 			4,
 			4,
+			pgEscape.literal('foo'),
+		],
+	},
+
+	{
+		name: 'no_primary_key',
+		readOnly: true,
+		sampleValues: [
 			pgEscape.literal('foo'),
 		],
 	},
@@ -65,7 +94,7 @@ const selectMacro = async (t, table) => {
 	t.deepEqual(upperRows, lowerRows);
 };
 
-tables.forEach(table => {
+tables.filter(table => !table.readOnly).forEach(table => {
 	test.serial(`${table.name} select`, selectMacro, table);
 
 	test.serial(`${table.name} delete`, async t => {
@@ -120,6 +149,38 @@ tables.forEach(table => {
 		const newUpperValues = filter(x => !anyEquals(x)(lowerRows))(upperRows);
 
 		t.is(newUpperValues.length, 1);
+	});
+
+	test.serial(`${table.name} select again`, selectMacro, table);
+});
+
+tables.filter(table => table.readOnly).forEach(table => {
+	test.serial(`${table.name} select`, selectMacro, table);
+
+	test.serial(`${table.name} delete (read-only)`, async t => {
+		const { upperPool } = t.context;
+
+		await t.throwsAsync(() => upperPool.query(
+			`DELETE FROM ${table.name} WHERE ${table.integerColumnName} = 3;`
+		));
+	});
+
+	test.serial(`${table.name} update (read-only)`, async t => {
+		const { upperPool } = t.context;
+
+		await t.throwsAsync(() => upperPool.query(
+			`UPDATE ${table.name} SET text = 'foo' WHERE true;`
+		));
+	});
+
+	test.serial(`${table.name} insert (read-only)`, async t => {
+		const { upperPool } = t.context;
+
+		const values = table.sampleValues.join(', ');
+
+		await t.throwsAsync(() => upperPool.query(
+			`INSERT INTO ${table.name} VALUES (${values});`
+		));
 	});
 
 	test.serial(`${table.name} select again`, selectMacro, table);
