@@ -34,6 +34,12 @@ test.before(async t => {
 		{
 			readOnly: false,
 			schemaName: 'public',
+			tableName: 'big',
+		},
+
+		{
+			readOnly: false,
+			schemaName: 'public',
 			tableName: 'compound_primary_key',
 		},
 
@@ -107,6 +113,15 @@ const tables = [
 		insertValues: [
 			4,
 			4,
+		],
+	},
+
+	{
+		name: 'big',
+		integerColumnName: 'id',
+		insertValues: [
+			2 ** 30,
+			pgEscape.literal('foo'),
 		],
 	},
 ];

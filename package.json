@@ -13,6 +13,7 @@
   "homepage": "https://github.com/futpib/postgres-overlay",
   "ava": {
     "verbose": true,
+    "timeout": "3s",
     "files": [
       "**/*.test.js",
       "!test/e2e/**/*.js"

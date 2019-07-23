@@ -38,4 +38,13 @@ CREATE TABLE U&"weird_name_\0441\043B\043E\043D_$1"
   );
 
 INSERT INTO U&"weird_name_\0441\043B\043E\043D_$1"
-VALUES (3, 3, 'initial_text_value')
+VALUES (3, 3, 'initial_text_value');
+
+CREATE TABLE big
+  ( id BIGSERIAL PRIMARY KEY
+  , text text
+  );
+
+INSERT INTO big
+SELECT generate_series
+FROM generate_series(1, (2^19)::bigint);

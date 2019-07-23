@@ -146,13 +146,19 @@ AS SELECT *
 FROM #{foreign_table_name};`;
 
 const CREATE_VIEW = `CREATE OR REPLACE VIEW #{view_name} AS
-SELECT #{select_expressions}
-FROM #{foreign_table_name}
-	LEFT JOIN #{deleted_table_name}
-		ON #{deleted_join_condition}
-	FULL OUTER JOIN #{inserted_table_name}
-		ON #{inserted_join_condition}
-WHERE #{where_condition};`;
+SELECT #{foreign_table_name}.*
+FROM (
+	SELECT #{primary_key}
+	FROM #{inserted_table_name}
+UNION
+	SELECT #{primary_key}
+	FROM #{foreign_table_name}
+EXCEPT
+	SELECT #{primary_key}
+	FROM #{deleted_table_name}
+) _ids
+	LEFT JOIN #{foreign_table_name}
+		ON #{foreign_join_condition};`;
 
 const CREATE_DEFAULT_FUNCTION = `CREATE OR REPLACE FUNCTION #{function_name}()
 RETURNS #{return_type}
@@ -426,6 +432,31 @@ const setupOverlay = ({ lowerOptions, upperOptions }) => withPool(lowerOptions, 
 					foreign_table_name: [ upperSchemaName, table.tablename ],
 					deleted_table_name: [ upperDeletedSchemaName, table.tablename ],
 					inserted_table_name: [ upperInsertedSchemaName, table.tablename ],
+
+					primary_key: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => escapeIdentifier(primaryKey.column_name))
+							.join(', ')
+					) },
+
+					foreign_join_condition: { unsafe: (
+						table.primaryKeys
+							.map(primaryKey => (
+								[
+									[
+										escapeIdentifier(upperSchemaName),
+										escapeIdentifier(table.tablename),
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+									'=',
+									[
+										'_ids',
+										escapeIdentifier(primaryKey.column_name),
+									].join('.'),
+								].join(' ')
+							))
+							.join(' AND ')
+					) },
 
 					select_expressions: { unsafe: (
 						table.columns
