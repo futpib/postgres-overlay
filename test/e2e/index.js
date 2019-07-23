@@ -1,8 +1,5 @@
 
 import {
-	any,
-	equals,
-	filter,
 	prop,
 	sortBy,
 } from 'sanctuary';
@@ -39,16 +36,19 @@ test.before(async t => {
 			schemaName: 'public',
 			tableName: 'compound_primary_key',
 		},
+
 		{
 			readOnly: true,
 			schemaName: 'public',
 			tableName: 'no_primary_key',
 		},
+
 		{
 			readOnly: false,
 			schemaName: 'public',
 			tableName: 'various_types',
 		},
+
 		{
 			readOnly: false,
 			schemaName: 'public',
@@ -114,10 +114,13 @@ const tables = [
 const selectMacro = async (t, table) => {
 	const { lowerPool, upperPool } = t.context;
 
-	const { rows: lowerRows } = await lowerPool.query(sql`SELECT * FROM ${table.name};`);
-	const { rows: upperRows } = await upperPool.query(sql`SELECT * FROM ${table.name};`);
+	const { rows: lowerRows } = await lowerPool.query(sql`SELECT md5(t::text) FROM ${table.name} t;`);
+	const { rows: upperRows } = await upperPool.query(sql`SELECT md5(t::text) FROM ${table.name} t;`);
 
-	t.deepEqual(upperRows, lowerRows);
+	t.deepEqual(
+		new Set(upperRows.map(row => row.md5)),
+		new Set(lowerRows.map(row => row.md5)),
+	);
 };
 
 tables.filter(table => !table.readOnly).forEach(table => {
@@ -131,13 +134,16 @@ tables.filter(table => !table.readOnly).forEach(table => {
 		);
 
 		const { rows: lowerRows } = await lowerPool.query(
-			sql`SELECT * FROM ${table.name} WHERE ${table.integerColumnName} != 3;`
+			sql`SELECT md5(t::text) FROM ${table.name} t WHERE ${table.integerColumnName} != 3;`
 		);
 		const { rows: upperRows } = await upperPool.query(
-			sql`SELECT * FROM ${table.name};`
+			sql`SELECT md5(t::text) FROM ${table.name} t;`
 		);
 
-		t.deepEqual(upperRows, lowerRows);
+		t.deepEqual(
+			new Set(upperRows.map(row => row.md5)),
+			new Set(lowerRows.map(row => row.md5)),
+		);
 	});
 
 	test.serial(`${table.name} update`, async t => {
@@ -163,25 +169,25 @@ tables.filter(table => !table.readOnly).forEach(table => {
 			(sql`INSERT INTO ${table.name} VALUES`) + `(${values});`
 		);
 
-		const { rows: upperRows } = await upperPool.query(
-			sql`SELECT * FROM ${table.name};`
+		let { rows: upperRows } = await upperPool.query(
+			sql`SELECT md5(t::text) FROM ${table.name} t;`
 		);
 
-		const { rows: lowerRows } = await lowerPool.query(
-			sql`SELECT * FROM ${table.name};`
+		let { rows: lowerRows } = await lowerPool.query(
+			sql`SELECT md5(t::text) FROM ${table.name} t;`
 		);
 
-		const anyEquals = x => any(equals(x));
-		const newUpperValues = filter(x => !anyEquals(x)(lowerRows))(upperRows);
+		upperRows = new Set(upperRows.map(r => r.md5));
+		lowerRows = new Set(lowerRows.map(r => r.md5));
 
-		t.is(newUpperValues.length, 1);
+		t.is(upperRows.size - lowerRows.size, 1);
 	});
 
 	test.serial(`${table.name} insert & delete`, async t => {
 		const { upperPool } = t.context;
 
-		const { rows: rowsBefore } = await upperPool.query(
-			sql`SELECT * FROM ${table.name};`
+		let { rows: rowsBefore } = await upperPool.query(
+			sql`SELECT md5(t::text) FROM ${table.name} t;`
 		);
 
 		const values = table.insertValues.join(', ');
@@ -194,13 +200,16 @@ tables.filter(table => !table.readOnly).forEach(table => {
 			(sql`DELETE FROM ${table.name} WHERE ${table.integerColumnName}`) + ` = ${row[table.integerColumnName]};`
 		);
 
-		const { rows: rowsAfter } = await upperPool.query(
-			sql`SELECT * FROM ${table.name};`
+		let { rows: rowsAfter } = await upperPool.query(
+			sql`SELECT md5(t::text) FROM ${table.name} t;`
 		);
 
+		rowsBefore = new Set(rowsBefore.map(r => r.md5));
+		rowsAfter = new Set(rowsAfter.map(r => r.md5));
+
 		t.deepEqual(
-			sortBy(JSON.stringify)(rowsAfter),
-			sortBy(JSON.stringify)(rowsBefore),
+			rowsAfter,
+			rowsBefore,
 		);
 	});
 
