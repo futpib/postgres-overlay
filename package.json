@@ -46,6 +46,6 @@
     "make-promises-safe": "^5.0.0",
     "pg": "^7.11.0",
     "pg-escape": "^0.2.0",
-    "sanctuary": "^2.0.0"
+    "sanctuary": "^3.0.0"
   }
 }
