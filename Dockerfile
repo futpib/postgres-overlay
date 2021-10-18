@@ -8,7 +8,7 @@ WORKDIR /usr/src/app
 COPY package.json yarn.lock /usr/src/app/
 RUN yarn
 
-FROM postgres:10-alpine
+FROM postgres:14-alpine
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
