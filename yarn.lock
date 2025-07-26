@@ -1574,10 +1574,10 @@ eslint-config-prettier@^3.3.0:
   dependencies:
     get-stdin "^6.0.0"
 
-eslint-config-xo-overrides@^1.4.0:
-  version "1.4.0"
-  resolved "https://registry.yarnpkg.com/eslint-config-xo-overrides/-/eslint-config-xo-overrides-1.4.0.tgz#4f2f144892ecb642830519c7b0e91e09252ae496"
-  integrity sha512-dJ8NQfniadppipSr9jOb9x73Bf6lzjoTlm0fMuB0CWyxptRXcSwpz5Q+k+sQCpxY8Da6jklMOKqi1X1IVTM7qA==
+eslint-config-xo-overrides@^2.0.0:
+  version "2.1.1"
+  resolved "https://registry.yarnpkg.com/eslint-config-xo-overrides/-/eslint-config-xo-overrides-2.1.1.tgz#f61c520a329307e9ad5e2b0eebf64e5e7d267838"
+  integrity sha512-00DJ6vVVnfKfR9pqdDqH3zvYj2lWRyomZkboqZocKb3q3WrOlZgjV58LZMnBhwzuf9OnJ44LsoEZYTmFH46mkw==
 
 eslint-config-xo@^0.26.0:
   version "0.26.0"
